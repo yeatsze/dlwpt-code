@@ -24,36 +24,47 @@ log.setLevel(logging.DEBUG)
 
 raw_cache = getCache('part2ch10_raw')
 
+#diameter_mm 直径长度mm
+#isNodule_bool 节点状态
 CandidateInfoTuple = namedtuple(
     'CandidateInfoTuple',
     'isNodule_bool, diameter_mm, series_uid, center_xyz',
 )
 
+"""
+requireOnDisk_bool 仅加载磁盘上存在的数据。允许部分数据尚未在磁盘上就绪。
+"""
 @functools.lru_cache(1)
 def getCandidateInfoList(requireOnDisk_bool=True):
     # We construct a set with all series_uids that are present on disk.
     # This will let us use the data, even if we haven't downloaded all of
     # the subsets yet.
+    # 首先使用内存缓存装饰器，然后获取磁盘上的文件列表。mhd文件包含元数据头信息，raw文件包含组成三维数组的原始数据
+    # 解析某些数据文件可能会很慢，因为把函数结果缓存至内存中。
     mhd_list = glob.glob('data-unversioned/part2/luna/subset*/*.mhd')
     presentOnDisk_set = {os.path.split(p)[-1][:-4] for p in mhd_list}
 
     diameter_dict = {}
+
+    # 加载标注数据集，该数据集有节点的直径数据
     with open('data/part2/luna/annotations.csv', "r") as f:
         for row in list(csv.reader(f))[1:]:
             series_uid = row[0]
             annotationCenter_xyz = tuple([float(x) for x in row[1:4]])
             annotationDiameter_mm = float(row[4])
-
+            # 相同series_uid坐标的结节,坐标可能很相近.一个series_uid 对应多个 结节点
             diameter_dict.setdefault(series_uid, []).append(
                 (annotationCenter_xyz, annotationDiameter_mm)
             )
 
     candidateInfo_list = []
+    # 加载候选节点数据集
     with open('data/part2/luna/candidates.csv', "r") as f:
         for row in list(csv.reader(f))[1:]:
             series_uid = row[0]
 
             if series_uid not in presentOnDisk_set and requireOnDisk_bool:
+                # 支持仅加载磁盘上存在的数据，可以跳过磁盘上尚未有的数据
                 continue
 
             isNodule_bool = bool(int(row[4]))
@@ -63,7 +74,11 @@ def getCandidateInfoList(requireOnDisk_bool=True):
             for annotation_tup in diameter_dict.get(series_uid, []):
                 annotationCenter_xyz, annotationDiameter_mm = annotation_tup
                 for i in range(3):
+                    # 候选节点 与 标注节点 的坐标相减,计算两者距离.如果距离足够近,则可以认为是相同结节. 如果不是同一个结节,结节直径设置为0
                     delta_mm = abs(candidateCenter_xyz[i] - annotationCenter_xyz[i])
+                    """
+                    将直径除以2得到半径，继续除以2，以要求2个结节中心点相对结节大小的距离不要太远。这将导致边界框检查，而不是真正的距离检查。
+                    """
                     if delta_mm > annotationDiameter_mm / 4:
                         break
                 else:
